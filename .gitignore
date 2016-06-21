@@ -7,3 +7,5 @@ marketmio/test.py
 
 test.py
 marketmio/test.py
+
+*.db
