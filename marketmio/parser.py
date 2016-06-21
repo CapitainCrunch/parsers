@@ -2,8 +2,7 @@ import requests
 import sqlite3
 from bs4 import BeautifulSoup
 import re
-import aiohttp
-import asyncio
+
 class SQL:
     def __init__(self, test_db):
         self.connection = sqlite3.connect(test_db, check_same_thread=False)
@@ -11,12 +10,12 @@ class SQL:
 
     def create_table(self):
         self.table = 'CREATE TABLE data (MAIN_CATEGORY TEXT, PRODUCT_CATEGORY TEXT, PRODUCTS_PAGE TEXT, ' \
-                     'VENDOR TEXT, MODEL TEXT, DESCRIPTION TEXT, PRICE TEXT, URL TEXT, PIC_URL TEXT)'
+                     'FULLNAME TEXT, DESCRIPTION TEXT, PRICE TEXT, URL TEXT, PIC_URL TEXT)'
         self.cursor.execute(self.table)
 
-    def insert(self, main_category, subcat, name, vendor, model, descr, price, url, pic_url):
+    def insert(self, main_category, subcat, name, fullname, descr, price, url, pic_url):
         query = 'INSERT into data VALUES ("{}", "{}", "{}", "{}", ' \
-                '"{}", "{}", "{}", "{}", "{}")'.format(main_category, subcat, name, vendor, model, descr, price, url, pic_url)
+                '"{}", "{}", "{}", "{}")'.format(main_category, subcat, name, fullname, descr, price, url, pic_url)
         self.cursor.execute(query)
         self.connection.commit()
 
@@ -37,23 +36,22 @@ maincats = [
             ('Бытовая техника', 'https://marketmio.ru/category/198118')]
 
 
+regex_produrl = re.compile('<a class="product__image-container ?e?v?e?n?t?" href="(.*?)"', re.M)
+regex_fullname = re.compile('<a class="product__name-link ?e?v?e?n?t?" href=".*?".*? title=".*?">(.*?)</a>', re.M)
+regex_price = re.compile('>?.*?(\d.*?)\sруб.')
+regex_description = re.compile('<a class="product__description.*?">\s*(.*?)\s.*?<ul class="bullet-list">', re.M)
+regex_pic_url = re.compile('src="(.*?jpe?g)', re.IGNORECASE | re.M)
+
+
+
 def get_suburl(soup_obj):
-    cats = [('category/91082', 'Источники бесперебойного питания')]
+    cats = []
     for link in soup_obj.find_all('a'):
         if link.get('class') == ['select-category__link', 'link']:
             res, = re.findall('<a class="select-category__link link" href="/(.*?)" title="(.*?)">.*?</a>', str(link))
             cats.append(res)
+    print(cats)
     return cats
-
-
-def get_content(link):
-    content = []
-    price = re.findall('\s(.*?)\sруб', str(link))
-    url = re.findall('<a class="product__image-container" href="(.*?)" title=".*?">', str(link))
-    name = re.findall('<a class="product__image-container" href=".*?" title="(.*?)">', str(link))
-    pic = re.findall('<img class="product__image" src="(.*?)">', str(link))
-    about = re.findall('Тип: .*', str(link))
-    return zip(url, name, price, pic, about)
 
 
 def run_parser():
@@ -61,67 +59,42 @@ def run_parser():
         print(name, url)
         page = requests.get(url).content.decode('utf8')
         soup = BeautifulSoup(page, 'html.parser')
-        for suburl, subname in get_suburl(soup):
+        for suburl, subname in get_suburl(soup)[4:]:
             suburl = main_url + '/' + suburl
             print(subname, suburl)
             for num in range(1, 51):
                 u = suburl + '?onStock=1&page=' + str(num)
                 print(u)
                 prodpage = requests.get(u).content.decode('utf8')
-                produrl = re.findall('<a class="product__image-container" href="(.*?)"', prodpage)
-                fullname = re.findall('<a class="product__name-link" href=".*?" title=".*?">(.*?)</a>', prodpage)
-                price = re.findall('.*от\s(.*?)\sруб.', prodpage)
-                description = re.findall('Тип: (.*)\s', prodpage)
-                pic_url = re.findall('<img src="(.*?)" class="product__image">', prodpage)
-                assert len(produrl) == 12
-                assert len(fullname) == 12
-                assert len(price) == 12
-                assert len(description) == 12
-                assert len(pic_url) == 12
+                produrl = []
+                fullname = []
+                price = []
+                description = []
+                pic_url = []
+                articles = re.findall('<article .*?</article>', prodpage, re.M | re.DOTALL)
+                for article in articles:
+                    produrl_res = regex_produrl.findall(article)
+                    fullname_res = regex_fullname.findall(article)
+                    price_res = regex_price.findall(article)
+                    description_res = regex_description.findall(article) if len(regex_description.findall(article)) > 0 else [None]
+                    pic_url_res = regex_pic_url.findall(article) if len(regex_pic_url.findall(article)) > 0 else [None]
+                    if len(pic_url_res) == 0:
+                        raise InterruptedError
+
+                    
+                    produrl.extend(produrl_res)
+                    fullname.extend(fullname_res)
+                    price.extend(price_res)
+                    description.extend(description_res)
+                    pic_url.extend(pic_url_res)
+                
                 data = zip(produrl, fullname, price, description, pic_url)
                 for d in data:
-                    print(d[1])
-                    # MAIN_CATEGORY, PRODUCT_CATEGORY, PRODUCTS_PAGE, VENDOR, MODEL, DESCRIPTION, PRICE, URL, PIC_URL
-                    try:
-                        sql.insert(name, subname, u, d[1].split()[0], d[1].split()[1], d[3], d[2], main_url + d[0], d[4])
-                    except:
-                        sql.insert(name, subname, u, d[1], d[3], d[2], main_url + d[0], d[4])
-        break
+                    print(name, subname, u, d[1], d[3], d[2], main_url + d[0], d[4])
+                    # MAIN_CATEGORY, PRODUCT_CATEGORY, PRODUCTS_PAGE, FULLNAME, DESCRIPTION, PRICE, URL, PIC_URL
+                    sql.insert(name, subname, u, d[1], d[3], d[2], main_url + d[0], d[4])
 
 
 run_parser()
 
 
-@asyncio.coroutine
-def get(*args, **kwargs):
-    response = yield from aiohttp.request('GET', *args, **kwargs)
-    return (yield from response.text())
-
-
-@asyncio.coroutine
-def downlaod_html(urls):
-    sem = asyncio.Semaphore(1000)
-    with (yield from sem):
-        page = yield from get(urls[0])
-        html = parsing_lessons(page, urls[3])
-
-
-def collect_urls(from_date, to_date, upd_type):
-    urls = []
-    for chat_id, email in mysql.search_all('users'):
-        url = 'http://ruz.hse.ru/ruzservice.svc/personlessons?fromdate=' + from_date + '&todate=' + to_date + '&' \
-              'receivertype=0&email=' + email
-        url2 = 'http://hse.ru/api/timetable/lessons?fromdate=' + from_date + '&todate=' + to_date+ '&receiverType=4&email=' + email
-        urls.append((url2, email, chat_id, upd_type))
-    mysql.close_conn()
-    print('Собрал все ссылки')
-    return urls
-
-
-def run_schedule_upd():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    print('Запускаю обновление')
-    f = asyncio.wait([downlaod_html(d) for d in collect_urls(addition_days(1), addition_days(7), 'week')])
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(f)
